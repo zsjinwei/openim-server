@@ -219,6 +219,14 @@ type Push struct {
 		PushURL      string `mapstructure:"pushURL"`
 		PushIntent   string `mapstructure:"pushIntent"`
 	} `mapstructure:"jpush"`
+	UniPush struct {
+		PushUrl     string `mapstructure:"pushUrl"`
+		AppId       string `mapstructure:"appId"`
+		SecType     string `mapstructure:"secType"`
+		ConnectCode string `mapstructure:"connectCode"`
+		SignMethod  string `mapstructure:"signMethod"`
+		SignKey     string `mapstructure:"signKey"`
+	} `mapstructure:"uniPush"`
 	IOSPush struct {
 		PushSound  string `mapstructure:"pushSound"`
 		BadgeCount bool   `mapstructure:"badgeCount"`
