@@ -2,32 +2,44 @@ package push
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/IBM/sarama"
 	"github.com/openimsdk/open-im-server/v3/internal/push/offlinepush"
 	"github.com/openimsdk/open-im-server/v3/internal/push/offlinepush/options"
+	"github.com/openimsdk/open-im-server/v3/pkg/apistruct"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/prommetrics"
+	"github.com/openimsdk/open-im-server/v3/pkg/rpccache"
+	"github.com/openimsdk/open-im-server/v3/pkg/rpcclient"
 	"github.com/openimsdk/protocol/constant"
 	pbpush "github.com/openimsdk/protocol/push"
 	"github.com/openimsdk/protocol/sdkws"
+	"github.com/openimsdk/tools/discovery"
 	"github.com/openimsdk/tools/errs"
 	"github.com/openimsdk/tools/log"
 	"github.com/openimsdk/tools/mq/kafka"
 	"github.com/openimsdk/tools/utils/jsonutil"
+	"github.com/redis/go-redis/v9"
 	"google.golang.org/protobuf/proto"
 )
 
 type OfflinePushConsumerHandler struct {
 	OfflinePushConsumerGroup *kafka.MConsumerGroup
 	offlinePusher            offlinepush.OfflinePusher
+	groupRpcClient           rpcclient.GroupRpcClient
+	groupLocalCache          *rpccache.GroupLocalCache
 }
 
-func NewOfflinePushConsumerHandler(config *Config, offlinePusher offlinepush.OfflinePusher) (*OfflinePushConsumerHandler, error) {
+func NewOfflinePushConsumerHandler(config *Config, offlinePusher offlinepush.OfflinePusher, rdb redis.UniversalClient,
+	client discovery.SvcDiscoveryRegistry) (*OfflinePushConsumerHandler, error) {
 	var offlinePushConsumerHandler OfflinePushConsumerHandler
 	var err error
 	offlinePushConsumerHandler.offlinePusher = offlinePusher
 	offlinePushConsumerHandler.OfflinePushConsumerGroup, err = kafka.NewMConsumerGroup(config.KafkaConfig.Build(), config.KafkaConfig.ToOfflineGroupID,
 		[]string{config.KafkaConfig.ToOfflinePushTopic}, true)
+	offlinePushConsumerHandler.groupRpcClient = rpcclient.NewGroupRpcClient(client, config.Share.RpcRegisterName.Group)
+	offlinePushConsumerHandler.groupLocalCache = rpccache.NewGroupLocalCache(offlinePushConsumerHandler.groupRpcClient, &config.LocalCacheConfig, rdb)
+
 	if err != nil {
 		return nil, err
 	}
@@ -66,7 +78,7 @@ func (o *OfflinePushConsumerHandler) handleMsg2OfflinePush(ctx context.Context, 
 	}
 }
 
-func (o *OfflinePushConsumerHandler) getOfflinePushInfos(msg *sdkws.MsgData) (title, content string, opts *options.Opts, err error) {
+func (o *OfflinePushConsumerHandler) getOfflinePushInfos(ctx context.Context, msg *sdkws.MsgData) (title, content string, opts *options.Opts, err error) {
 	type AtTextElem struct {
 		Text       string   `json:"text,omitempty"`
 		AtUserList []string `json:"atUserList,omitempty"`
@@ -77,7 +89,17 @@ func (o *OfflinePushConsumerHandler) getOfflinePushInfos(msg *sdkws.MsgData) (ti
 	if msg.OfflinePushInfo != nil {
 		opts.IOSBadgeCount = msg.OfflinePushInfo.IOSBadgeCount
 		opts.IOSPushSound = msg.OfflinePushInfo.IOSPushSound
-		opts.Ex = msg.OfflinePushInfo.Ex
+		ex := options.PushEx{}
+		_ = jsonutil.JsonStringToStruct(msg.OfflinePushInfo.Ex, &ex)
+		ex.Payload.SessionType = int(msg.SessionType)
+
+		if msg.SessionType == constant.SingleChatType {
+			ex.Payload.SourceID = msg.SendID
+		} else if msg.SessionType == constant.WriteGroupChatType || msg.SessionType == constant.ReadGroupChatType {
+			ex.Payload.SourceID = msg.GroupID
+		}
+
+		opts.Ex = jsonutil.StructToJsonString(ex)
 	}
 
 	if msg.OfflinePushInfo != nil {
@@ -85,24 +107,59 @@ func (o *OfflinePushConsumerHandler) getOfflinePushInfos(msg *sdkws.MsgData) (ti
 		content = msg.OfflinePushInfo.Desc
 	}
 	if title == "" {
+		ignoreSenderNickname := true
+		if msg.SessionType == constant.SingleChatType {
+			title = msg.SenderNickname
+			ignoreSenderNickname = true
+		} else if msg.SessionType == constant.WriteGroupChatType || msg.SessionType == constant.ReadGroupChatType {
+			gm, err := o.groupLocalCache.GetGroupInfo(ctx, msg.GroupID)
+			if err == nil {
+				title = gm.GroupName
+			}
+			ignoreSenderNickname = false
+		}
 		switch msg.ContentType {
 		case constant.Text:
-			fallthrough
+			c := apistruct.TextElem{}
+			if err := jsonutil.JsonStringToStruct(string(msg.Content), &c); err != nil {
+				content = "[文本]"
+			} else {
+				content = c.Content
+			}
 		case constant.Picture:
-			fallthrough
+			content = "[图片]"
 		case constant.Voice:
-			fallthrough
+			c := apistruct.SoundElem{}
+			if err := jsonutil.JsonStringToStruct(string(msg.Content), &c); err != nil {
+				content = "[语音]"
+			} else {
+				content = fmt.Sprintf("[语音] %d\"", c.Duration)
+			}
 		case constant.Video:
-			fallthrough
+			content = "[视频]"
 		case constant.File:
-			title = constant.ContentType2PushContent[int64(msg.ContentType)]
+			c := apistruct.FileElem{}
+			if err := jsonutil.JsonStringToStruct(string(msg.Content), &c); err != nil {
+				content = "[文件]"
+			} else {
+				content = fmt.Sprintf("[文件] %s", c.FileName)
+			}
 		case constant.AtText:
-			ac := AtTextElem{}
-			_ = jsonutil.JsonStringToStruct(string(msg.Content), &ac)
-		case constant.SignalingNotification:
-			title = constant.ContentType2PushContent[constant.SignalMsg]
+			c := apistruct.AtElem{}
+			if err := jsonutil.JsonStringToStruct(string(msg.Content), &c); err != nil {
+				content = "[文本]"
+			} else {
+				if c.IsAtSelf {
+					content = fmt.Sprintf("[有人@我] %s", c.Text)
+				} else {
+					content = c.Text
+				}
+			}
 		default:
-			title = constant.ContentType2PushContent[constant.Common]
+			content = "您有一条新消息"
+		}
+		if !ignoreSenderNickname {
+			content = fmt.Sprintf("%s: %s", msg.SenderNickname, content)
 		}
 	}
 	if content == "" {
@@ -112,7 +169,7 @@ func (o *OfflinePushConsumerHandler) getOfflinePushInfos(msg *sdkws.MsgData) (ti
 }
 
 func (o *OfflinePushConsumerHandler) offlinePushMsg(ctx context.Context, msg *sdkws.MsgData, offlinePushUserIDs []string) error {
-	title, content, opts, err := o.getOfflinePushInfos(msg)
+	title, content, opts, err := o.getOfflinePushInfos(ctx, msg)
 	if err != nil {
 		return err
 	}
