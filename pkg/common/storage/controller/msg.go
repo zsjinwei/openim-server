@@ -50,6 +50,8 @@ type CommonMsgDatabase interface {
 	RevokeMsg(ctx context.Context, conversationID string, seq int64, revoke *model.RevokeModel) error
 	// MarkSingleChatMsgsAsRead marks messages as read for a single chat by sequence numbers.
 	MarkSingleChatMsgsAsRead(ctx context.Context, userID string, conversationID string, seqs []int64) error
+	// MarkGroupChatMsgsAsRead marks messages as read for a group chat by sequence numbers.
+	MarkGroupChatMsgsAsRead(ctx context.Context, userID string, conversationID string, seqs []int64) (error, string)
 	// GetMsgBySeqsRange retrieves messages from MongoDB by a range of sequence numbers.
 	GetMsgBySeqsRange(ctx context.Context, userID string, conversationID string, begin, end, num, userMaxSeq int64) (minSeq int64, maxSeq int64, seqMsg []*sdkws.MsgData, err error)
 	// GetMsgBySeqs retrieves messages for large groups from MongoDB by sequence numbers.
@@ -97,6 +99,10 @@ type CommonMsgDatabase interface {
 	DeleteDocMsgBefore(ctx context.Context, ts int64, doc *model.MsgDocModel) ([]int, error)
 
 	GetDocIDs(ctx context.Context) ([]string, error)
+
+	GetMsgDocByClientMsgID(ctx context.Context, conversationID string, clientMsgID string) (*model.MsgDocModel, error)
+	GetMsgInfoByClientMsgID(ctx context.Context, conversationID string, clientMsgID string) (*model.MsgInfoModel, error)
+	GetMsgDataByClientMsgID(ctx context.Context, conversationID string, clientMsgID string) (*model.MsgDataModel, error)
 }
 
 func NewCommonMsgDatabase(msgDocModel database.Msg, msg cache.MsgCache, seqUser cache.SeqUser, seqConversation cache.SeqConversationCache, kafkaConf *config.Kafka) (CommonMsgDatabase, error) {
@@ -249,6 +255,23 @@ func (db *commonMsgDatabase) MarkSingleChatMsgsAsRead(ctx context.Context, userI
 		}
 	}
 	return nil
+}
+
+func (db *commonMsgDatabase) MarkGroupChatMsgsAsRead(ctx context.Context, userID string, conversationID string, totalSeqs []int64) (error, string) {
+	var err error
+	var str = ""
+	for docID, seqs := range db.msgTable.GetDocIDSeqsMap(conversationID, totalSeqs) {
+		var indexes []int64
+		for _, seq := range seqs {
+			indexes = append(indexes, db.msgTable.GetMsgIndex(seq))
+		}
+		log.ZDebug(ctx, "MarkGroupChatMsgsAsRead", "userID", userID, "docID", docID, "indexes", indexes)
+		if err, str = db.msgDocDatabase.MarkGroupChatMsgsAsRead(ctx, userID, docID, indexes); err != nil {
+			log.ZError(ctx, "MarkGroupChatMsgsAsRead", err, "userID", userID, "docID", docID, "indexes", indexes)
+			return err, str
+		}
+	}
+	return nil, str
 }
 
 func (db *commonMsgDatabase) getMsgBySeqs(ctx context.Context, userID, conversationID string, seqs []int64) (totalMsgs []*sdkws.MsgData, err error) {
@@ -892,4 +915,61 @@ func (db *commonMsgDatabase) GetMaxSeqWithTime(ctx context.Context, conversation
 func (db *commonMsgDatabase) GetMaxSeqsWithTime(ctx context.Context, conversationIDs []string) (map[string]database.SeqTime, error) {
 	// todo: only the time in the redis cache will be taken, not the message time
 	return db.seqConversation.GetMaxSeqsWithTime(ctx, conversationIDs)
+}
+
+func (db *commonMsgDatabase) GetMsgDocByClientMsgID(ctx context.Context, conversationID string, clientMsgID string) (*model.MsgDocModel, error) {
+	var totalSeqs []int64
+	maxSeq, err := db.seqConversation.GetMaxSeq(ctx, conversationID)
+	if err != nil {
+		return nil, err
+	}
+
+	for i := int64(1); i <= maxSeq; i++ {
+		totalSeqs = append(totalSeqs, i)
+	}
+
+	for docID := range db.msgTable.GetDocIDSeqsMap(conversationID, totalSeqs) {
+		msgDoc, err := db.msgDocDatabase.FindOneByDocID(ctx, docID)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, msg := range msgDoc.Msg {
+			if msg.Msg.ClientMsgID == clientMsgID {
+				return msgDoc, nil
+			}
+		}
+	}
+
+	return nil, nil
+}
+
+func (db *commonMsgDatabase) GetMsgInfoByClientMsgID(ctx context.Context, conversationID string, clientMsgID string) (*model.MsgInfoModel, error) {
+	msgDoc, err := db.GetMsgDocByClientMsgID(ctx, conversationID, clientMsgID)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, msg := range msgDoc.Msg {
+		if msg.Msg.ClientMsgID == clientMsgID {
+			return msg, nil
+		}
+	}
+
+	return nil, nil
+}
+
+func (db *commonMsgDatabase) GetMsgDataByClientMsgID(ctx context.Context, conversationID string, clientMsgID string) (*model.MsgDataModel, error) {
+	msgDoc, err := db.GetMsgDocByClientMsgID(ctx, conversationID, clientMsgID)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, msg := range msgDoc.Msg {
+		if msg.Msg.ClientMsgID == clientMsgID {
+			return msg.Msg, nil
+		}
+	}
+
+	return nil, nil
 }
