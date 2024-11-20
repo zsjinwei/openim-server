@@ -15,9 +15,10 @@
 package model
 
 import (
+	"strconv"
+
 	"github.com/openimsdk/protocol/sdkws"
 	"github.com/openimsdk/tools/errs"
-	"strconv"
 )
 
 const (
@@ -75,11 +76,17 @@ type MsgDataModel struct {
 	Ex               string            `bson:"ex"`
 }
 
+type ReadInfoModel struct {
+	UserID   string `bson:"user_id"`
+	ReadTime int64  `bson:"read_time"`
+}
+
 type MsgInfoModel struct {
-	Msg     *MsgDataModel `bson:"msg"`
-	Revoke  *RevokeModel  `bson:"revoke"`
-	DelList []string      `bson:"del_list"`
-	IsRead  bool          `bson:"is_read"`
+	Msg      *MsgDataModel             `bson:"msg"`
+	Revoke   *RevokeModel              `bson:"revoke"`
+	DelList  []string                  `bson:"del_list"`
+	IsRead   bool                      `bson:"is_read"`
+	ReadInfo map[string]*ReadInfoModel `bson:"read_info"`
 }
 
 type UserCount struct {
