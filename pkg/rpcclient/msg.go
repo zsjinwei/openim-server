@@ -236,6 +236,15 @@ func (m *MessageRpcClient) GetSeqMessage(ctx context.Context, req *msg.GetSeqMes
 	return m.Client.GetSeqMessage(ctx, req)
 }
 
+func (m *MessageRpcClient) GetGroupMessageHasRead(ctx context.Context, req *msg.GetGroupMessageHasReadReq) (*msg.GetGroupMessageHasReadResp, error) {
+	resp, err := m.Client.GetGroupMessageHasRead(ctx, req)
+	if err != nil {
+		// Wrap the error to provide more context if the gRPC call fails.
+		return nil, err
+	}
+	return resp, nil
+}
+
 func (m *MessageRpcClient) GetConversationMaxSeq(ctx context.Context, conversationID string) (int64, error) {
 	resp, err := m.Client.GetConversationMaxSeq(ctx, &msg.GetConversationMaxSeqReq{ConversationID: conversationID})
 	if err != nil {

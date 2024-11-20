@@ -222,6 +222,8 @@ func newGinRouter(disCov discovery.SvcDiscoveryRegistry, config *Config) *gin.En
 		msgGroup.POST("/batch_send_msg", m.BatchSendMsg)
 		msgGroup.POST("/check_msg_is_send_success", m.CheckMsgIsSendSuccess)
 		msgGroup.POST("/get_server_time", m.GetServerTime)
+
+		msgGroup.POST("/get_group_message_has_read", m.GetGroupMessageHasRead)
 	}
 	// Conversation
 	conversationGroup := r.Group("/conversation")

@@ -373,3 +373,7 @@ func (m *MessageApi) SearchMsg(c *gin.Context) {
 func (m *MessageApi) GetServerTime(c *gin.Context) {
 	a2r.Call(msg.MsgClient.GetServerTime, m.Client, c)
 }
+
+func (m *MessageApi) GetGroupMessageHasRead(c *gin.Context) {
+	a2r.Call(msg.MsgClient.GetGroupMessageHasRead, m.Client, c)
+}
