@@ -3,10 +3,12 @@ package push
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math/rand"
 	"strconv"
 	"time"
 
+	"github.com/openimsdk/open-im-server/v3/pkg/apistruct"
 	"github.com/openimsdk/open-im-server/v3/pkg/rpcli"
 
 	"github.com/IBM/sarama"
@@ -357,7 +359,7 @@ func (c *ConsumerHandler) groupMessagesHandler(ctx context.Context, groupID stri
 }
 
 func (c *ConsumerHandler) offlinePushMsg(ctx context.Context, msg *sdkws.MsgData, offlinePushUserIDs []string) error {
-	title, content, opts, err := c.getOfflinePushInfos(msg)
+	title, content, opts, err := c.getOfflinePushInfos(ctx, msg)
 	if err != nil {
 		log.ZError(ctx, "getOfflinePushInfos failed", err, "msg", msg)
 		return err
@@ -379,17 +381,20 @@ func (c *ConsumerHandler) filterGroupMessageOfflinePush(ctx context.Context, gro
 	return needOfflinePushUserIDs, nil
 }
 
-func (c *ConsumerHandler) getOfflinePushInfos(msg *sdkws.MsgData) (title, content string, opts *options.Opts, err error) {
-	type AtTextElem struct {
-		Text       string   `json:"text,omitempty"`
-		AtUserList []string `json:"atUserList,omitempty"`
-		IsAtSelf   bool     `json:"isAtSelf"`
-	}
-
+func (c *ConsumerHandler) getOfflinePushInfos(ctx context.Context, msg *sdkws.MsgData) (title, content string, opts *options.Opts, err error) {
 	opts = &options.Opts{Signal: &options.Signal{ClientMsgID: msg.ClientMsgID}}
 	if msg.OfflinePushInfo != nil {
 		opts.IOSBadgeCount = msg.OfflinePushInfo.IOSBadgeCount
 		opts.IOSPushSound = msg.OfflinePushInfo.IOSPushSound
+		ex := options.PushEx{}
+		_ = jsonutil.JsonStringToStruct(msg.OfflinePushInfo.Ex, &ex)
+		ex.Payload.SessionType = int(msg.SessionType)
+		if msg.SessionType == constant.SingleChatType {
+			ex.Payload.SourceID = msg.SendID
+		} else if msg.SessionType == constant.WriteGroupChatType || msg.SessionType == constant.ReadGroupChatType {
+			ex.Payload.SourceID = msg.GroupID
+		}
+		opts.Ex = jsonutil.StructToJsonString(ex)
 		opts.Ex = msg.OfflinePushInfo.Ex
 	}
 
@@ -398,24 +403,59 @@ func (c *ConsumerHandler) getOfflinePushInfos(msg *sdkws.MsgData) (title, conten
 		content = msg.OfflinePushInfo.Desc
 	}
 	if title == "" {
+		ignoreSenderNickname := true
+		if msg.SessionType == constant.SingleChatType {
+			title = msg.SenderNickname
+			ignoreSenderNickname = true
+		} else if msg.SessionType == constant.WriteGroupChatType || msg.SessionType == constant.ReadGroupChatType {
+			gm, err := c.groupLocalCache.GetGroupInfo(ctx, msg.GroupID)
+			if err == nil {
+				title = gm.GroupName
+			}
+			ignoreSenderNickname = false
+		}
 		switch msg.ContentType {
 		case constant.Text:
-			fallthrough
+			c := apistruct.TextElem{}
+			if err := jsonutil.JsonStringToStruct(string(msg.Content), &c); err != nil {
+				content = "[文本]"
+			} else {
+				content = c.Content
+			}
 		case constant.Picture:
-			fallthrough
+			content = "[图片]"
 		case constant.Voice:
-			fallthrough
+			c := apistruct.SoundElem{}
+			if err := jsonutil.JsonStringToStruct(string(msg.Content), &c); err != nil {
+				content = "[语音]"
+			} else {
+				content = fmt.Sprintf("[语音] %d\"", c.Duration)
+			}
 		case constant.Video:
-			fallthrough
+			content = "[视频]"
 		case constant.File:
-			title = constant.ContentType2PushContent[int64(msg.ContentType)]
+			c := apistruct.FileElem{}
+			if err := jsonutil.JsonStringToStruct(string(msg.Content), &c); err != nil {
+				content = "[文件]"
+			} else {
+				content = fmt.Sprintf("[文件] %s", c.FileName)
+			}
 		case constant.AtText:
-			ac := AtTextElem{}
-			_ = jsonutil.JsonStringToStruct(string(msg.Content), &ac)
-		case constant.SignalingNotification:
-			title = constant.ContentType2PushContent[constant.SignalMsg]
+			c := apistruct.AtElem{}
+			if err := jsonutil.JsonStringToStruct(string(msg.Content), &c); err != nil {
+				content = "[文本]"
+			} else {
+				if c.IsAtSelf {
+					content = fmt.Sprintf("[有人@我] %s", c.Text)
+				} else {
+					content = c.Text
+				}
+			}
 		default:
-			title = constant.ContentType2PushContent[constant.Common]
+			content = "您有一条新消息"
+		}
+		if !ignoreSenderNickname {
+			content = fmt.Sprintf("%s: %s", msg.SenderNickname, content)
 		}
 	}
 	if content == "" {

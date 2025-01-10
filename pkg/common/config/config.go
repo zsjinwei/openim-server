@@ -18,8 +18,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/openimsdk/tools/s3/aws"
-
 	"github.com/openimsdk/tools/db/mongoutil"
 	"github.com/openimsdk/tools/db/redisutil"
 	"github.com/openimsdk/tools/mq/kafka"

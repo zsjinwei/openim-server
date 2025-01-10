@@ -62,7 +62,7 @@ func Start(ctx context.Context, config *Config, client discovery.SvcDiscoveryReg
 		return err
 	}
 
-	offlinePushConsumer, err := NewOfflinePushConsumerHandler(config, offlinePusher)
+	offlinePushConsumer, err := NewOfflinePushConsumerHandler(ctx, config, offlinePusher, rdb, client)
 	if err != nil {
 		return err
 	}
