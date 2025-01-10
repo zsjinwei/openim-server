@@ -31,6 +31,13 @@ jpush:
   masterSecret:
   pushURL:
   pushIntent:
+uniPush:
+  pushUrl:
+  appId:
+  secType: sign
+  connectCode:
+  signMethod: hmac-sha256
+  signKey:
 
 # iOS system push sound and badge count
 iosPush:

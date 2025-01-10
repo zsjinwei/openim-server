@@ -16,20 +16,23 @@ package offlinepush
 
 import (
 	"context"
+	"strings"
+
 	"github.com/openimsdk/open-im-server/v3/internal/push/offlinepush/dummy"
 	"github.com/openimsdk/open-im-server/v3/internal/push/offlinepush/fcm"
 	"github.com/openimsdk/open-im-server/v3/internal/push/offlinepush/getui"
 	"github.com/openimsdk/open-im-server/v3/internal/push/offlinepush/jpush"
 	"github.com/openimsdk/open-im-server/v3/internal/push/offlinepush/options"
+	"github.com/openimsdk/open-im-server/v3/internal/push/offlinepush/unipush"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/config"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/cache"
-	"strings"
 )
 
 const (
 	geTUI    = "getui"
 	firebase = "fcm"
 	jPush    = "jpush"
+	uniPush  = "unipush"
 )
 
 // OfflinePusher Offline Pusher.
@@ -47,6 +50,8 @@ func NewOfflinePusher(pushConf *config.Push, cache cache.ThirdCache, fcmConfigPa
 		return fcm.NewClient(pushConf, cache, fcmConfigPath)
 	case jPush:
 		offlinePusher = jpush.NewClient(pushConf)
+	case uniPush:
+		offlinePusher = unipush.NewClient(pushConf)
 	default:
 		offlinePusher = dummy.NewClient()
 	}
