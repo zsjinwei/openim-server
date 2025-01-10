@@ -18,10 +18,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/openimsdk/tools/utils/jsonutil"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/openimsdk/tools/utils/jsonutil"
 
 	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/database"
 	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/model"
@@ -52,6 +53,8 @@ type CommonMsgDatabase interface {
 	RevokeMsg(ctx context.Context, conversationID string, seq int64, revoke *model.RevokeModel) error
 	// MarkSingleChatMsgsAsRead marks messages as read for a single chat by sequence numbers.
 	MarkSingleChatMsgsAsRead(ctx context.Context, userID string, conversationID string, seqs []int64) error
+	// MarkGroupChatMsgsAsRead marks messages as read for a group chat by sequence numbers.
+	MarkGroupChatMsgsAsRead(ctx context.Context, userID string, conversationID string, seqs []int64) (string, error)
 	// GetMsgBySeqsRange retrieves messages from MongoDB by a range of sequence numbers.
 	GetMsgBySeqsRange(ctx context.Context, userID string, conversationID string, begin, end, num, userMaxSeq int64) (minSeq int64, maxSeq int64, seqMsg []*sdkws.MsgData, err error)
 	// GetMsgBySeqs retrieves messages for large groups from MongoDB by sequence numbers.
@@ -99,6 +102,8 @@ type CommonMsgDatabase interface {
 	GetLastMessageSeqByTime(ctx context.Context, conversationID string, time int64) (int64, error)
 
 	GetLastMessage(ctx context.Context, conversationIDS []string, userID string) (map[string]*sdkws.MsgData, error)
+
+	GetMsgInfoByClientMsgID(ctx context.Context, conversationID string, clientMsgID string) (*model.MsgInfoModel, error)
 }
 
 func NewCommonMsgDatabase(msgDocModel database.Msg, msg cache.MsgCache, seqUser cache.SeqUser, seqConversation cache.SeqConversationCache, kafkaConf *config.Kafka) (CommonMsgDatabase, error) {
@@ -255,6 +260,23 @@ func (db *commonMsgDatabase) MarkSingleChatMsgsAsRead(ctx context.Context, userI
 		}
 	}
 	return db.msgCache.DelMessageBySeqs(ctx, conversationID, totalSeqs)
+}
+
+func (db *commonMsgDatabase) MarkGroupChatMsgsAsRead(ctx context.Context, userID string, conversationID string, totalSeqs []int64) (string, error) {
+	var err error
+	var str = ""
+	for docID, seqs := range db.msgTable.GetDocIDSeqsMap(conversationID, totalSeqs) {
+		var indexes []int64
+		for _, seq := range seqs {
+			indexes = append(indexes, db.msgTable.GetMsgIndex(seq))
+		}
+		log.ZDebug(ctx, "MarkGroupChatMsgsAsRead", "userID", userID, "docID", docID, "indexes", indexes)
+		if str, err = db.msgDocDatabase.MarkGroupChatMsgsAsRead(ctx, userID, docID, indexes); err != nil {
+			log.ZError(ctx, "MarkGroupChatMsgsAsRead", err, "userID", userID, "docID", docID, "indexes", indexes)
+			return str, err
+		}
+	}
+	return str, db.msgCache.DelMessageBySeqs(ctx, conversationID, totalSeqs)
 }
 
 func (db *commonMsgDatabase) getMsgBySeqs(ctx context.Context, userID, conversationID string, seqs []int64) (totalMsgs []*sdkws.MsgData, err error) {
@@ -838,4 +860,13 @@ func (db *commonMsgDatabase) GetLastMessage(ctx context.Context, conversationIDs
 		res[conversationID] = convert.MsgDB2Pb(msg.Msg)
 	}
 	return res, nil
+}
+
+func (db *commonMsgDatabase) GetMsgInfoByClientMsgID(ctx context.Context, conversationID string, clientMsgID string) (*model.MsgInfoModel, error) {
+	msgInfo, err := db.msgDocDatabase.GetMsgByClientMsgID(ctx, conversationID, clientMsgID)
+	if err != nil {
+		return nil, err
+	}
+
+	return msgInfo, nil
 }

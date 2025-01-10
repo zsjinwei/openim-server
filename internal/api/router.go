@@ -3,6 +3,9 @@ package api
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"strings"
+
 	"github.com/openimsdk/open-im-server/v3/pkg/rpcli"
 	pbAuth "github.com/openimsdk/protocol/auth"
 	"github.com/openimsdk/protocol/conversation"
@@ -11,8 +14,6 @@ import (
 	"github.com/openimsdk/protocol/relation"
 	"github.com/openimsdk/protocol/third"
 	"github.com/openimsdk/protocol/user"
-	"net/http"
-	"strings"
 
 	"github.com/openimsdk/open-im-server/v3/internal/api/jssdk"
 
@@ -251,6 +252,8 @@ func newGinRouter(ctx context.Context, client discovery.SvcDiscoveryRegistry, co
 		msgGroup.POST("/batch_send_msg", m.BatchSendMsg)
 		msgGroup.POST("/check_msg_is_send_success", m.CheckMsgIsSendSuccess)
 		msgGroup.POST("/get_server_time", m.GetServerTime)
+
+		msgGroup.POST("/get_group_message_has_read", m.GetGroupMessageHasRead)
 	}
 	// Conversation
 	{

@@ -379,3 +379,7 @@ func (m *MessageApi) GetStreamMsg(c *gin.Context) {
 func (m *MessageApi) AppendStreamMsg(c *gin.Context) {
 	a2r.Call(c, msg.MsgClient.GetServerTime, m.Client)
 }
+
+func (m *MessageApi) GetGroupMessageHasRead(c *gin.Context) {
+	a2r.Call(c, msg.MsgClient.GetGroupMessageHasRead, m.Client)
+}

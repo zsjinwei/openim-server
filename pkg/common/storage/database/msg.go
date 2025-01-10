@@ -33,6 +33,8 @@ type Msg interface {
 	GetOldestMsg(ctx context.Context, conversationID string) (*model.MsgInfoModel, error)
 	DeleteMsgsInOneDocByIndex(ctx context.Context, docID string, indexes []int) error
 	MarkSingleChatMsgsAsRead(ctx context.Context, userID string, docID string, indexes []int64) error
+	MarkGroupChatMsgsAsRead(ctx context.Context, userID string, docID string, indexes []int64) (string, error)
+	GetMsgByClientMsgID(ctx context.Context, conversationID string, clientMsgID string) (*model.MsgInfoModel, error)
 	SearchMessage(ctx context.Context, req *msg.SearchMessageReq) (int64, []*model.MsgInfoModel, error)
 	RangeUserSendCount(ctx context.Context, start time.Time, end time.Time, group bool, ase bool, pageNumber int32, showNumber int32) (msgCount int64, userCount int64, users []*model.UserCount, dateCount map[string]int64, err error)
 	RangeGroupSendCount(ctx context.Context, start time.Time, end time.Time, ase bool, pageNumber int32, showNumber int32) (msgCount int64, userCount int64, groups []*model.GroupCount, dateCount map[string]int64, err error)

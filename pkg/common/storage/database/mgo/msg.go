@@ -2,7 +2,10 @@ package mgo
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/openimsdk/open-im-server/v3/pkg/common/storage/database"
@@ -230,6 +233,7 @@ func (m *MsgMgo) DeleteMsgsInOneDocByIndex(ctx context.Context, docID string, in
 
 func (m *MsgMgo) MarkSingleChatMsgsAsRead(ctx context.Context, userID string, docID string, indexes []int64) error {
 	var updates []mongo.WriteModel
+	now := time.Now()
 	for _, index := range indexes {
 		filter := bson.M{
 			"doc_id": docID,
@@ -240,6 +244,12 @@ func (m *MsgMgo) MarkSingleChatMsgsAsRead(ctx context.Context, userID string, do
 		update := bson.M{
 			"$set": bson.M{
 				fmt.Sprintf("msgs.%d.is_read", index): true,
+				fmt.Sprintf("msgs.%d.read_info", index): bson.M{
+					userID: bson.M{
+						"user_id":   userID,
+						"read_time": now.UnixNano() / 1e6,
+					},
+				},
 			},
 		}
 		updateModel := mongo.NewUpdateManyModel().
@@ -251,6 +261,201 @@ func (m *MsgMgo) MarkSingleChatMsgsAsRead(ctx context.Context, userID string, do
 		return errs.WrapMsg(err, fmt.Sprintf("docID is %s, indexes is %v", docID, indexes))
 	}
 	return nil
+}
+
+type GroupHasReadInfo struct {
+	HasReadUserIDList []string `json:"hasReadUserIDList,omitempty"`
+	HasReadCount      int32    `json:"hasReadCount"`
+	GroupMemberCount  int32    `json:"groupMemberCount"`
+}
+type AttachedInfoElem struct {
+	GroupHasReadInfo GroupHasReadInfo `json:"groupHasReadInfo,omitempty"`
+}
+
+func GetNestedValue(data interface{}, path string) (interface{}, error) {
+	keys := strings.Split(path, ".")
+	var current interface{} = data
+	for _, key := range keys {
+		// 处理数组索引
+		if idx, err := strconv.Atoi(key); err == nil {
+			switch currentValue := current.(type) {
+			case []interface{}: // 标准 Go 切片
+				if idx < 0 || idx >= len(currentValue) {
+					return nil, fmt.Errorf("index out of range for key '%s': %d", key, idx)
+				}
+				current = currentValue[idx]
+			case primitive.A: // MongoDB BSON 数组
+				if idx < 0 || idx >= len(currentValue) {
+					return nil, fmt.Errorf("index out of range for key '%s': %d", key, idx)
+				}
+				current = currentValue[idx] // 直接使用 BSON 数组的索引
+			default:
+				return nil, fmt.Errorf("invalid type at key '%s': expected a slice, got %T", key, current)
+			}
+			continue
+		}
+		// 处理 map
+		if currentMap, ok := current.(map[string]interface{}); ok {
+			if val, exists := currentMap[key]; exists {
+				current = val
+				continue
+			}
+			return nil, fmt.Errorf("key '%s' not found", key)
+		}
+		return nil, fmt.Errorf("invalid type at key '%s': expected a map, got %T", key, current)
+	}
+	return current, nil
+}
+
+type GroupChatHasReadInfo struct {
+	Seq              int64             `json:"seq"`
+	GroupHasReadInfo *GroupHasReadInfo `json:"groupHasReadInfo"`
+}
+
+func (m *MsgMgo) MarkGroupChatMsgsAsRead(ctx context.Context, userID string, docID string, indexes []int64) (string, error) {
+	var patches = []GroupChatHasReadInfo{}
+	var patchesStr = []byte{}
+	var updates []mongo.WriteModel
+	filter := bson.M{"doc_id": docID}
+	cursor, err := m.coll.Find(ctx, filter)
+	if err != nil {
+		return string(patchesStr), fmt.Errorf("failed to find messages: %v", err)
+	}
+	defer cursor.Close(ctx)
+	now := time.Now()
+	for cursor.Next(ctx) {
+		var msg map[string]interface{}
+		if err := cursor.Decode(&msg); err != nil {
+			return string(patchesStr), fmt.Errorf("failed to decode message: %v", err)
+		}
+		for _, index := range indexes {
+			oldReadInfo, _ := GetNestedValue(msg, fmt.Sprintf("msgs.%d.read_info", index))
+			sendIDValue, err := GetNestedValue(msg, fmt.Sprintf("msgs.%d.msg.send_id", index))
+			// fmt.Printf("sendIDValue: %+v\n", sendIDValue)
+			if err != nil || sendIDValue == nil {
+				fmt.Printf("failed to find send_id: %v", err)
+				continue
+			}
+			sendID, ok := sendIDValue.(string)
+			if !ok {
+				fmt.Println("failed to unmarshal send_id")
+				continue
+			}
+			if sendID == userID {
+				continue
+			}
+			seqValue, err := GetNestedValue(msg, fmt.Sprintf("msgs.%d.msg.seq", index))
+			fmt.Printf("seqValue: %+v\n", seqValue)
+			if err != nil || seqValue == nil {
+				fmt.Printf("failed to find seq: %v", err)
+				continue
+			}
+			seq, ok := seqValue.(int64)
+			if !ok {
+				fmt.Println("failed to unmarshal seq")
+				continue
+			}
+			attachedInfoValue, err := GetNestedValue(msg, fmt.Sprintf("msgs.%d.msg.attached_info", index))
+			if err != nil || attachedInfoValue == nil {
+				continue
+			}
+			attachedInfoStr, ok := attachedInfoValue.(string)
+			if !ok {
+				fmt.Println("failed to unmarshal attached_info")
+			}
+			if attachedInfoStr == "" {
+				attachedInfoStr = "{}"
+			}
+			var attachedInfo AttachedInfoElem
+			err = json.Unmarshal([]byte(attachedInfoStr), &attachedInfo)
+			if err != nil {
+				return string(patchesStr), fmt.Errorf("failed to unmarshal attached_info: %v", err)
+			}
+			if attachedInfo.GroupHasReadInfo.HasReadUserIDList == nil {
+				attachedInfo.GroupHasReadInfo.HasReadUserIDList = []string{}
+			}
+			if datautil.IndexOf(userID, attachedInfo.GroupHasReadInfo.HasReadUserIDList...) == -1 {
+				attachedInfo.GroupHasReadInfo.HasReadUserIDList = append(attachedInfo.GroupHasReadInfo.HasReadUserIDList, userID)
+				attachedInfo.GroupHasReadInfo.HasReadCount = int32(len(attachedInfo.GroupHasReadInfo.HasReadUserIDList))
+			}
+			updatedAttachedInfoStr, err := json.Marshal(attachedInfo)
+			if err != nil {
+				return "", fmt.Errorf("failed to marshal updated attached_info: %v", err)
+			}
+			var update bson.M
+
+			if oldReadInfo == nil {
+				update = bson.M{
+					"$set": bson.M{
+						fmt.Sprintf("msgs.%d.is_read", index): true,
+						fmt.Sprintf("msgs.%d.read_info", index): bson.M{
+							userID: bson.M{
+								"user_id":   userID,
+								"read_time": now.UnixNano() / 1e6,
+							},
+						},
+					},
+				}
+			} else {
+				update = bson.M{
+					"$set": bson.M{
+						fmt.Sprintf("msgs.%d.is_read", index):           true,
+						fmt.Sprintf("msgs.%d.msg.attached_info", index): string(updatedAttachedInfoStr),
+						fmt.Sprintf("msgs.%d.read_info.%s", index, userID): bson.M{
+							"user_id":   userID,
+							"read_time": now.UnixNano() / 1e6,
+						},
+					},
+				}
+			}
+			updateModel := mongo.NewUpdateManyModel().
+				SetFilter(bson.M{"doc_id": docID}).
+				SetUpdate(update)
+			updates = append(updates, updateModel)
+			patches = append(patches, GroupChatHasReadInfo{
+				Seq:              seq,
+				GroupHasReadInfo: &attachedInfo.GroupHasReadInfo,
+			})
+			patchesStr, err = json.Marshal(patches)
+			if err != nil {
+				return "", fmt.Errorf("failed to marshal updated patches: %v", err)
+			}
+			// fmt.Printf("patchesStr: %s", string(patchesStr))
+		}
+	}
+	if len(updates) > 0 {
+		if _, err := m.coll.BulkWrite(ctx, updates); err != nil {
+			return string(patchesStr), errs.WrapMsg(err, fmt.Sprintf("docID is %s, indexes is %v", docID, indexes))
+		}
+	}
+	return string(patchesStr), nil
+}
+
+func (m *MsgMgo) GetMsgByClientMsgID(ctx context.Context, conversationID string, clientMsgID string) (*model.MsgInfoModel, error) {
+	regexPattern := fmt.Sprintf("^%s:\\d+$", conversationID)
+	msgDoc, err := mongoutil.FindOne[*model.MsgDocModel](ctx, m.coll, bson.M{
+		"doc_id": bson.M{
+			"$regex": regexPattern,
+		},
+		"msgs.msg.client_msg_id": clientMsgID,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if msgDoc == nil {
+		return nil, nil
+	}
+
+	for _, msg := range msgDoc.Msg {
+		if msg == nil || msg.Msg == nil {
+			continue
+		}
+		if msg.Msg.ClientMsgID == clientMsgID {
+			return msg, nil
+		}
+	}
+	return nil, nil
 }
 
 type searchMessageIndex struct {
