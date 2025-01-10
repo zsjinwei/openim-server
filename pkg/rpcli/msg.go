@@ -2,6 +2,7 @@ package rpcli
 
 import (
 	"context"
+
 	"github.com/openimsdk/protocol/msg"
 	"github.com/openimsdk/protocol/sdkws"
 	"google.golang.org/grpc"
@@ -87,4 +88,15 @@ func (x *MsgClient) SetUserConversationsMinSeq(ctx context.Context, conversation
 	}
 	req := &msg.SetUserConversationsMinSeqReq{ConversationID: conversationID, UserIDs: userIDs, Seq: seq}
 	return ignoreResp(x.MsgClient.SetUserConversationsMinSeq(ctx, req))
+}
+
+func (x *MsgClient) GetGroupMessageHasRead(ctx context.Context, req *msg.GetGroupMessageHasReadReq) (*msg.GetGroupMessageHasReadResp, error) {
+	if req == nil {
+		return nil, nil
+	}
+	resp, err := x.MsgClient.GetGroupMessageHasRead(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
 }

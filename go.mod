@@ -197,3 +197,5 @@ require (
 	golang.org/x/crypto v0.27.0 // indirect
 	gopkg.in/ini.v1 v1.67.0 // indirect
 )
+
+replace github.com/openimsdk/protocol v0.0.72-alpha.71 => github.com/zsjinwei/openim-protocol v0.0.72-alpha.71.2
